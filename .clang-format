@@ -1,0 +1,12 @@
+BasedOnStyle: Microsoft
+
+ColumnLimit: 100
+IndentWidth: 4
+UseTab: Always
+
+DerivePointerAlignment: false
+PointerAlignment: Left
+AlwaysBreakTemplateDeclarations: Yes
+AccessModifierOffset: -4
+AllowShortBlocksOnASingleLine: Always
+AllowShortFunctionsOnASingleLine: Inline

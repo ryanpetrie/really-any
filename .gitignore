@@ -1,0 +1,4 @@
+*.user
+vcpkg_installed/
+x64/
+.vs/
