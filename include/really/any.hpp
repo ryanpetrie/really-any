@@ -59,12 +59,14 @@ public:
 		return typename_ == other.typename_;
 	}
 
+#ifdef STRING_VIEW_HAS_SPACESHIP_OPERATOR
 	inline constexpr auto operator<=>(const type_info& other) const noexcept
 	{
 		return typename_ <=> other.typename_;
 	}
+#endif
 
-	inline constexpr bool before(const type_info& other) const noexcept { return *this < other; }
+	inline constexpr bool before(const type_info& other) const noexcept { return typename_ < other.typename_; }
 
 private:
 	template <class T>
@@ -339,11 +341,11 @@ class any_type_operations
 public:
 	virtual size_t size() const = 0;
 	virtual type_info get_type_info() const = 0;
-	virtual void copy(void* dest, const void* src) = 0;
-	virtual void copy_assign(void* dest, const void* src) = 0;
-	virtual void move(void* dest, void* src) = 0;
-	virtual void move_assign(void* dest, void* src) = 0;
-	virtual void destruct(void* dest) = 0;
+	virtual void copy(void* dest, const void* src) const = 0;
+	virtual void copy_assign(void* dest, const void* src) const = 0;
+	virtual void move(void* dest, void* src) const = 0;
+	virtual void move_assign(void* dest, void* src) const = 0;
+	virtual void destruct(void* dest) const = 0;
 };
 
 template <class T>
@@ -352,7 +354,7 @@ class any_type_operations_impl : public any_type_operations
 	virtual size_t size() const { return sizeof(T); }
 	virtual type_info get_type_info() const { return really::get_type_info<T>(); }
 
-	virtual void copy(void* dest, const void* src)
+	virtual void copy(void* dest, const void* src) const
 	{
 		if (auto copy_func = typeops::copy_construct<T>)
 		{
@@ -360,7 +362,7 @@ class any_type_operations_impl : public any_type_operations
 		}
 	}
 
-	virtual void copy_assign(void* dest, const void* src)
+	virtual void copy_assign(void* dest, const void* src) const
 	{
 		if (auto copy_func = typeops::copy_assign<T>)
 		{
@@ -368,7 +370,7 @@ class any_type_operations_impl : public any_type_operations
 		}
 	}
 
-	virtual void move(void* dest, void* src)
+	virtual void move(void* dest, void* src) const
 	{
 		if (auto move_func = typeops::move_construct<T>)
 		{
@@ -376,7 +378,7 @@ class any_type_operations_impl : public any_type_operations
 		}
 	}
 
-	virtual void move_assign(void* dest, void* src)
+	virtual void move_assign(void* dest, void* src) const
 	{
 		if (auto move_func = typeops::move_assign<T>)
 		{
@@ -384,19 +386,16 @@ class any_type_operations_impl : public any_type_operations
 		}
 	}
 
-	virtual void destruct(void* dest) { typeops::destruct<T>(dest); }
+	virtual void destruct(void* dest) const { typeops::destruct<T>(dest); }
 };
 
 template <class T>
-constexpr any_type_operations* get_type_operations()
-{
-	static any_type_operations_impl<T> impl;
-	return &impl;
-}
+constexpr inline any_type_operations_impl<T> type_operations = {};
 
 template <any_storage Storage, any_copy_support CopySupport>
 class any_base : Storage
 {
+	using this_t = any_base<Storage, CopySupport>;
 public:
 	static constexpr any_copy_support copy_support = CopySupport;
 
@@ -430,15 +429,15 @@ public:
 	}
 
 	template <class T>
-		requires(CopySupport == any_copy_support::copy_and_move && std::is_copy_constructible_v<T>)
-	explicit any_base(const T& value)
+		requires(!std::is_base_of_v<this_t, T> && CopySupport == any_copy_support::copy_and_move && std::is_copy_constructible_v<T>)
+	any_base(const T& value)
 	{
 		emplace<T>(value);
 	}
 
 	template <class T>
-		requires(CopySupport > any_copy_support::no_copy_or_move && std::is_move_constructible_v<T>)
-	explicit any_base(T&& value) noexcept
+		requires(!std::is_base_of_v<this_t, T> && CopySupport > any_copy_support::no_copy_or_move && std::is_move_constructible_v<T>)
+	any_base(T&& value) noexcept
 	{
 		emplace<T>(std::move(value));
 	}
@@ -475,7 +474,7 @@ public:
 	}
 
 	template <class T>
-		requires(CopySupport == any_copy_support::copy_and_move && std::is_copy_constructible_v<T>)
+		requires(!std::is_base_of_v<this_t, T>&& CopySupport == any_copy_support::copy_and_move && std::is_copy_constructible_v<T>)
 	any_base& operator=(const T& value)
 	{
 		if (any_ops_ != nullptr && any_ops_->get_type_info() == get_type_info<T>())
@@ -491,7 +490,7 @@ public:
 	}
 
 	template <class T>
-		requires(!std::is_lvalue_reference_v<T> &&
+		requires(!std::is_base_of_v<this_t, T> && !std::is_lvalue_reference_v<T> &&
 				 CopySupport > any_copy_support::no_copy_or_move && std::is_move_constructible_v<T>)
 	any_base& operator=(T&& value) noexcept
 	{
@@ -516,7 +515,7 @@ public:
 		this->allocate(sizeof(value_t));
 		void* storage = this->get_storage();
 		new (storage) value_t(std::forward<Args>(args)...);
-		any_ops_ = get_type_operations<value_t>();
+		any_ops_ = &type_operations<value_t>;
 		return *static_cast<value_t*>(storage);
 	}
 
@@ -597,6 +596,12 @@ public:
 		return has_type<T>() ? static_cast<std::decay_t<T>*>(this->get_storage()) : nullptr;
 	}
 
+	template <class T>
+	const std::decay_t<T>* try_get_value() const
+	{
+		return has_type<T>() ? static_cast<const std::decay_t<T>*>(this->get_storage()) : nullptr;
+	}
+
 private:
 	template <any_storage OtherStorage, any_copy_support OtherCopySupport>
 	void copy(const any_base<OtherStorage, OtherCopySupport>& other)
@@ -641,8 +646,13 @@ private:
 		}
 	}
 
-	any_type_operations* any_ops_ = nullptr;
+	const any_type_operations* any_ops_ = nullptr;
 };
+
+consteval std::false_type is_any(...);
+
+template <any_storage Storage, any_copy_support CopySupport>
+consteval std::true_type is_any(any_base<Storage, CopySupport>*);
 
 } // namespace detail
 
@@ -729,6 +739,17 @@ public:
 };
 
 static_assert(sizeof(any<>) == (3 * sizeof(void*)), "Internal error: any is not expected size");
+
+template <class T>
+concept any_any = std::is_same_v<std::true_type, decltype(detail::is_any(std::declval<T*>()))>;
+
+static_assert(any_any<any<>>);
+
+template <class T, any_any Any>
+T* any_cast(Any* any) { return any->template try_get_value<T>(); }
+
+template <class T, any_any Any>
+const T* any_cast(const Any* any) { return any->template try_get_value<T>(); }
 
 using copyable_any = any<any_copy_support::copy_and_move>;
 using movable_any = any<any_copy_support::move_only>;
